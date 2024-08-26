@@ -1911,7 +1911,7 @@ class Trainer:
 
                     self._maybe_log_save_evaluate(tr_loss, model, trial, epoch, ignore_keys_for_eval) #TODO
                 else:
-                    self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
+                    self.control = self.callback_handler.on_substep_end(args, self.state, self.control) #[ ]非梯度更新的其他step
 
                 if self.control.should_epoch_stop or self.control.should_training_stop:
                     break

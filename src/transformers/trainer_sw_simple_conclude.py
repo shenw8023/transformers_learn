@@ -229,7 +229,7 @@
                     steps_in_epoch <= args.gradient_accumulation_steps and (step + 1) == steps_in_epoch
                 )
                 
-                #[ ]开始进行一次update_step的时候了
+                #[ ]判断需要进行一次update_step的时候了
                 if (
                     total_batched_samples % args.gradient_accumulation_steps == 0
                     or
@@ -255,13 +255,62 @@
                             self.lr_scheduler.step()  #[ ]scheduler更新
 
                     model.zero_grad()
-                    self.state.global_step += 1
-                    self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
-                    self.control = self.callback_handler.on_step_end(args, self.state, self.control)
+                    self.state.global_step += 1 #[ ]更新state.global_step
+                    self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch  #[ ]更新state.epoch
+                    self.control = self.callback_handler.on_step_end(args, self.state, self.control) #[ ] callback.on_step_end
 
                     self._maybe_log_save_evaluate(tr_loss, model, trial, epoch, ignore_keys_for_eval) #TODO
                 else:
-                    self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
+                    #[ ]否则进行普通step的操作
+                    self.control = self.callback_handler.on_substep_end(args, self.state, self.control) #[ ] 非update_step的其他step
 
                 if self.control.should_epoch_stop or self.control.should_training_stop:
                     break
+
+
+
+    
+    def _maybe_log_save_evaluate(self, tr_loss, model, trial, epoch, ignore_keys_for_eval):
+        if self.control.should_log: #TODO 根据control变量的变化进行log，在基础流程DefaultFlowCallback中会在个别调用callback时，对control进行设定，而在control的_new_step会重新设定should_log为False
+            logs: Dict[str, float] = {}
+
+            # all_gather + mean() to get average loss over all processes
+            tr_loss_scalar = self._nested_gather(tr_loss).mean().item()
+
+            # reset tr_loss to zero #TODO
+            tr_loss -= tr_loss
+
+            logs["loss"] = round(tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4) #[ ]记录多个update_step之间的平均loss
+            logs["learning_rate"] = self._get_learning_rate()
+
+            self._total_loss_scalar += tr_loss_scalar
+            self._globalstep_last_logged = self.state.global_step
+            self.store_flos()
+
+            self.log(logs)
+
+        metrics = None
+        if self.control.should_evaluate:
+            if isinstance(self.eval_dataset, dict):
+                metrics = {}
+                for eval_dataset_name, eval_dataset in self.eval_dataset.items():
+                    dataset_metrics = self.evaluate(
+                        eval_dataset=eval_dataset,
+                        ignore_keys=ignore_keys_for_eval,
+                        metric_key_prefix=f"eval_{eval_dataset_name}",
+                    )
+                    metrics.update(dataset_metrics)
+            else:
+                metrics = self.evaluate(ignore_keys=ignore_keys_for_eval)
+            self._report_to_hp_search(trial, self.state.global_step, metrics)
+
+            # Run delayed LR scheduler now that metrics are populated
+            if isinstance(self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                metric_to_check = self.args.metric_for_best_model
+                if not metric_to_check.startswith("eval_"):
+                    metric_to_check = f"eval_{metric_to_check}"
+                self.lr_scheduler.step(metrics[metric_to_check])
+
+        if self.control.should_save:
+            self._save_checkpoint(model, trial, metrics=metrics)
+            self.control = self.callback_handler.on_save(self.args, self.state, self.control)
