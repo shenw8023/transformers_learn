@@ -1943,7 +1943,7 @@ class Trainer:
             delattr(self, "_past")
 
         logger.info("\n\nTraining completed. Do not forget to share your model on huggingface.co/models =)\n\n")
-        if args.load_best_model_at_end and self.state.best_model_checkpoint is not None:
+        if args.load_best_model_at_end and self.state.best_model_checkpoint is not None: #[ ]在_save_checkpoint时会记录self.state.best_model_checkpoint
             # Wait for everyone to get here so we are sure the model has been saved by process 0.
             if is_torch_tpu_available():
                 xm.rendezvous("load_best_model_at_end")
@@ -1954,7 +1954,7 @@ class Trainer:
 
             self._load_best_model()
 
-        # add remaining tr_loss
+        # add remaining tr_loss #TODO
         self._total_loss_scalar += tr_loss.item()
         train_loss = self._total_loss_scalar / self.state.global_step
 
@@ -2225,7 +2225,7 @@ class Trainer:
             )
 
     def _maybe_log_save_evaluate(self, tr_loss, model, trial, epoch, ignore_keys_for_eval):
-        if self.control.should_log:
+        if self.control.should_log:  #TODO 根据control变量的变化进行log，在基础流程DefaultFlowCallback中会在个别调用callback时，对control进行设定，而在control的_new_step会重新设定should_log为False
             if is_torch_tpu_available():
                 xm.mark_step()
 
