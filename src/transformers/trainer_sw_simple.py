@@ -1956,7 +1956,7 @@ class Trainer:
 
         # add remaining tr_loss #TODO
         self._total_loss_scalar += tr_loss.item()
-        train_loss = self._total_loss_scalar / self.state.global_step
+        train_loss = self._total_loss_scalar / self.state.global_step #[ ] 后面记录到metrics，这是平均update_step的loss
 
         metrics = speed_metrics(
             "train",

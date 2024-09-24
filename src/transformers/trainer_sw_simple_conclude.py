@@ -1,7 +1,82 @@
 
+class Trainer:
+
+    def __init__(
+        self,
+        model: Union[PreTrainedModel, nn.Module] = None,
+        args: TrainingArguments = None,
+        data_collator: Optional[DataCollator] = None,
+        train_dataset: Optional[Dataset] = None,
+        eval_dataset: Optional[Union[Dataset, Dict[str, Dataset]]] = None,
+        tokenizer: Optional[PreTrainedTokenizerBase] = None,
+        model_init: Optional[Callable[[], PreTrainedModel]] = None,
+        compute_metrics: Optional[Callable[[EvalPrediction], Dict]] = None,
+        callbacks: Optional[List[TrainerCallback]] = None,
+        optimizers: Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR] = (None, None),
+        preprocess_logits_for_metrics: Optional[Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = None,
+    ):
+        if args is None:
+            output_dir = "tmp_trainer"
+            logger.info(f"No `TrainingArguments` passed, using `output_dir={output_dir}`.")
+            args = TrainingArguments(output_dir=output_dir)
+        self.args = args
+
+        self.create_accelerator_and_postprocess() #[ ]
+
+        # set the correct log level depending on the node
+        log_level = args.get_process_log_level()
+        logging.set_verbosity(log_level)
+
+        # force device and distributed setup init explicitly
+        args._setup_devices #[ ]
+
+        self.is_fsdp_xla_enabled = args.fsdp_config["xla"]
+        if len(args.fsdp) > 0:
+            if self.is_deepspeed_enabled:
+                raise ValueError(
+                    "Using --fsdp xxx together with --deepspeed is not possible, deactivate one of those flags."
+                )
+            if not args.fsdp_config["xla"] and args.parallel_mode != ParallelMode.DISTRIBUTED:
+                raise ValueError("Using fsdp only works in distributed training.")
+        
+
+        default_collator = default_data_collator if tokenizer is None else DataCollatorWithPadding(tokenizer)
+        self.data_collator = data_collator if data_collator is not None else default_collator
+        self.train_dataset = train_dataset
+        self.eval_dataset = eval_dataset
+        self.tokenizer = tokenizer
+
+        self.compute_metrics = compute_metrics
+        self.preprocess_logits_for_metrics = preprocess_logits_for_metrics
+        self.optimizer, self.lr_scheduler = optimizers
+
+        if (self.is_deepspeed_enabled or self.is_fsdp_xla_enabled or self.is_fsdp_enabled) and (
+            self.optimizer is not None or self.lr_scheduler is not None
+        ):
+            raise RuntimeError(
+                "Passing `optimizers` is not allowed if Deepspeed or PyTorch FSDP is enabled. "
+                "You should subclass `Trainer` and override the `create_optimizer_and_scheduler` method."
+            )
+        
+        #[ ] 设置callback
+        default_callbacks = DEFAULT_CALLBACKS + get_reporting_integration_callbacks(self.args.report_to)
+        callbacks = default_callbacks if callbacks is None else default_callbacks + callbacks
+        self.callback_handler = CallbackHandler(
+            callbacks, self.model, self.tokenizer, self.optimizer, self.lr_scheduler
+        )
+        self.add_callback(PrinterCallback if self.args.disable_tqdm else DEFAULT_PROGRESS_CALLBACK)
+
+        if self.args.should_save:
+            os.makedirs(self.args.output_dir, exist_ok=True)
 
 
-
+        #[ ] TrainerState, TrainerControl
+        self.state = TrainerState(
+            is_local_process_zero=self.is_local_process_zero(),
+            is_world_process_zero=self.is_world_process_zero(),
+        )
+        self.control = TrainerControl()
+        self.control = self.callback_handler.on_init_end(self.args, self.state, self.control)
 
 
     def compute_loss(self, model, inputs, return_outputs=False):
@@ -272,12 +347,30 @@
             if self.control.should_training_stop:
                 break
             
-            #[ ]训练结束后根据情况是否要加载最优模型
-            if args.load_best_model_at_end and self.state.best_model_checkpoint is not None: #[ ]在_save_checkpoint时会记录self.state.best_model_checkpoint
-                # Wait for everyone to get here so we are sure the model has been saved by process 0.
-                self._load_best_model()
+        #[ ]训练结束后根据情况是否要加载最优模型
+        if args.load_best_model_at_end and self.state.best_model_checkpoint is not None: #[ ]在_save_checkpoint时会记录self.state.best_model_checkpoint
+            # Wait for everyone to get here so we are sure the model has been saved by process 0.
+            self._load_best_model()
 
-            
+        # add remaining tr_loss #TODO
+        self._total_loss_scalar += tr_loss.item()
+        train_loss = self._total_loss_scalar / self.state.global_step #[ ] 后面记录到metrics，这是平均update_step的loss
+        
+        metrics["train_loss"] = train_loss
+        self.log(metrics)
+
+        run_dir = self._get_output_dir(trial)
+        checkpoints_sorted = self._sorted_checkpoints(use_mtime=False, output_dir=run_dir)
+
+        # Delete the last checkpoint when save_total_limit=1 if it's different from the best checkpoint and process allowed to save.
+        if self.args.should_save and self.state.best_model_checkpoint is not None and self.args.save_total_limit == 1:
+            for checkpoint in checkpoints_sorted:
+                if not os.path.samefile(checkpoint, self.state.best_model_checkpoint):
+                    logger.info(f"Deleting older checkpoint [{checkpoint}] due to args.save_total_limit")
+                    shutil.rmtree(checkpoint)
+
+        self.control = self.callback_handler.on_train_end(args, self.state, self.control)
+        return TrainOutput(self.state.global_step, train_loss, metrics)
     
     def _maybe_log_save_evaluate(self, tr_loss, model, trial, epoch, ignore_keys_for_eval):
         if self.control.should_log: #TODO 根据control相关属性的变化进行log，在基础流程DefaultFlowCallback中会在各个特殊节点调用callback时，对control变量相关属性进行修改，而在control的_new_step会重新设定should_log为False
