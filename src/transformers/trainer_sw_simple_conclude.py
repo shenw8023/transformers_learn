@@ -213,6 +213,21 @@ class Trainer:
                 self.state.save_steps = args.save_steps
 
 
+        #[ ] Activate gradient checkpointing if needed
+        if args.gradient_checkpointing:
+            if args.gradient_checkpointing_kwargs is None:
+                gradient_checkpointing_kwargs = {}
+            else:
+                gradient_checkpointing_kwargs = args.gradient_checkpointing_kwargs
+            self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
+
+
+        # for the rest of this function `model` is the outside model, whether it was wrapped or not
+        if model is not self.model:
+            self.model_wrapped = model
+
+
+
         #[ ] Train!
         logger.info("***** Running training *****")
         logger.info(f"  Num examples = {num_examples:,}")

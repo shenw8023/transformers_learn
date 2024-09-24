@@ -1653,13 +1653,16 @@ class Trainer:
 
             self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
 
-        model = self._wrap_model(self.model_wrapped)
-
+        model = self._wrap_model(self.model_wrapped) 
+            
         # as the model is wrapped, don't use `accelerator.prepare`
         # this is for unhandled cases such as
         # FSDP-XLA, SageMaker MP/DP, DataParallel, IPEX
-        use_accelerator_prepare = True if model is self.model else False
-
+        use_accelerator_prepare = True if model is self.model else False 
+            #[ ] self._wrap_model会根据需要对self.model_wrapped做封装，封装模型的原因可能是为了兼容不同的加速框架（如分布式训练、XLA、SageMaker 等），这种封装可能会改变模型的外层结构，使其与原来的模型对象 self.model 不同。
+            # 模型被封装之后（特别是在处理复杂的分布式场景，如 FSDP-XLA、SageMaker MP/DP、DataParallel、IPEX 等），模型结构已经被修改，直接对封装后的模型调用 accelerator.prepare 可能会不合适或多余。
+            # 所以如果 self.model_wrapped 封装后没有改变什么，还是指向self.model，那么就可以放心使用 accelerator.prepare，否则说明self.model_wrapped已经封装过了，已经有处理好了的self.model_wrapped，这里不需要再做prepare操作了
+            # 为什么不写成 model=self._wrap_model(self.model)？ 因为我们关心的就是self.model_wrapped，就看它是否需要进一步做包装
         if delay_optimizer_creation:
             self.create_optimizer_and_scheduler(num_training_steps=max_steps) #TODO 这中间做了什么，delay的目的是什么
 
