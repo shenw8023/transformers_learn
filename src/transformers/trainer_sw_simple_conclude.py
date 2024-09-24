@@ -183,10 +183,18 @@ class Trainer:
 
 
     def _inner_training_loop(self, ):
+        
+        #[ ]确定以下参数
+        total_train_batch_size #（一个update_step下）所有进程在一起的总batch_size
+        len_dataloader #每个进程自己的dataloader的长度
+        num_update_steps_per_epoch #每个进程自己的一个epoch的update_step数量
+        max_steps #会直接影响num_train_epochs
+        num_train_epochs
+
 
         #[ ]创建TrainerState来记录训练过程中状态，记录训练到多少轮多少步了
         self.state = TrainerState()
-        self.state.train_batch_size = self._train_batch_size
+        self.state.train_batch_size = self._train_batch_size #[ ]分布式环境下就等于per_device_train_batch_size
         # Compute absolute values for logging, eval, and save if given as ratio
         if args.logging_steps is not None:
             if args.logging_steps < 1:
