@@ -1550,19 +1550,20 @@ class Trainer:
             self.state.train_batch_size = self._train_batch_size
         logger.debug(f"Currently training with a batch size of: {self._train_batch_size}")
         # Data loader and number of training steps
-        train_dataloader = self.get_train_dataloader()
+        train_dataloader = self.get_train_dataloader() #[ ]经过accelerator.prepare，每个进程上的train_dataloader长度被平分了。
 
         # Setting up training control variables:
         # number of training epochs: num_train_epochs
         # number of training steps per epoch: num_update_steps_per_epoch
         # total number of training steps to execute: max_steps
         total_train_batch_size = self._train_batch_size * args.gradient_accumulation_steps * args.world_size #[ ]如果是分布式这里的self._train_batch_size就是per_device_train_batch_size，目的是数据并行和分布式数据并行的区别
+        #（一个update_step下）所有进程在一起的总batch_size
 
         len_dataloader = None
         num_train_tokens = None
         if has_length(train_dataloader):
             len_dataloader = len(train_dataloader)
-            num_update_steps_per_epoch = len_dataloader // args.gradient_accumulation_steps #[ ]每个epoch要进行的更新步数
+            num_update_steps_per_epoch = len_dataloader // args.gradient_accumulation_steps #[ ]每个epoch要进行的更新步数（对每个进程独立去看的）
             num_update_steps_per_epoch = max(num_update_steps_per_epoch, 1)
             num_examples = self.num_examples(train_dataloader)
             if args.max_steps > 0:
@@ -1609,7 +1610,7 @@ class Trainer:
             else:
                 debug_overflow = DebugUnderflowOverflow(self.model)  # noqa
 
-        delay_optimizer_creation = is_sagemaker_mp_enabled() or self.is_fsdp_xla_enabled or self.is_fsdp_enabled #TODO 如果是fsdp，就要延迟创建optimizer？
+        delay_optimizer_creation = is_sagemaker_mp_enabled() or self.is_fsdp_xla_enabled or self.is_fsdp_enabled #TODO 如果是fsdp，需要延迟创建optimizer？
 
         # We need to reset the scheduler, as its parameters may be different on subsequent calls
         if self._created_lr_scheduler:  #重新创建scheduler
@@ -1624,7 +1625,7 @@ class Trainer:
 
         self.state = TrainerState()
         self.state.is_hyper_param_search = trial is not None
-        self.state.train_batch_size = self._train_batch_size
+        self.state.train_batch_size = self._train_batch_size #[ ]分布式环境下就等于per_device_train_batch_size
 
         # Compute absolute values for logging, eval, and save if given as ratio
         if args.logging_steps is not None:
