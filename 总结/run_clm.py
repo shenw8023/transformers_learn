@@ -402,7 +402,7 @@ def main():
         "token": model_args.token,
         "trust_remote_code": model_args.trust_remote_code,
     }
-    # [ ] config加载逻辑：1.有没有明确的config_name；2.从模型名或路径加载载model_name_or_path；3.model_type从头训练
+    # [ ] config加载逻辑：1.有没有明确的config_name；2.从模型名或路径加载model_name_or_path；3.model_type从头训练
     if model_args.config_name:
         config = AutoConfig.from_pretrained(model_args.config_name, **config_kwargs)
     elif model_args.model_name_or_path:
@@ -415,6 +415,7 @@ def main():
             config.update_from_string(model_args.config_overrides)
             logger.info(f"New config: {config}")
 
+    #[ ] tokenizer加载逻辑
     tokenizer_kwargs = {
         "cache_dir": model_args.cache_dir,
         "use_fast": model_args.use_fast_tokenizer,
@@ -465,7 +466,7 @@ def main():
         model.resize_token_embeddings(len(tokenizer))
 
     # Preprocessing the datasets.
-    # First we tokenize all the texts.
+    #[ ] First we tokenize all the texts.
     if training_args.do_train:
         column_names = list(raw_datasets["train"].features)
     else:
@@ -526,7 +527,7 @@ def main():
         block_size = min(data_args.block_size, tokenizer.model_max_length)
 
 
-    #[ ] 拼接所有样例，再按照block_size切分为chunks，一般sft应该是不合适的
+    #[ ] 拼接所有样例，再按照block_size切分为chunks，一般sft应该不这么做吧
     # Main data processing function that will concatenate all texts from our dataset and generate chunks of block_size.
     def group_texts(examples):
         # Concatenate all texts.

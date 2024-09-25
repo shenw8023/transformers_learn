@@ -1664,7 +1664,7 @@ class Trainer:
             # 所以如果 self.model_wrapped 封装后没有改变什么，还是指向self.model，那么就可以放心使用 accelerator.prepare，否则说明self.model_wrapped已经封装过了，已经有处理好了的self.model_wrapped，这里不需要再做prepare操作了
             # 为什么不写成 model=self._wrap_model(self.model)？ 因为我们关心的就是self.model_wrapped，就看它是否需要进一步做包装
         if delay_optimizer_creation:
-            self.create_optimizer_and_scheduler(num_training_steps=max_steps) #TODO 这中间做了什么，delay的目的是什么
+            self.create_optimizer_and_scheduler(num_training_steps=max_steps) #TODO 这中间做了什么，看起来没有delay啥呀？
 
         # prepare using `accelerator` prepare
         if use_accelerator_prepare:
@@ -1681,7 +1681,7 @@ class Trainer:
                 )
 
         if self.is_fsdp_enabled:
-            self.model = self.model_wrapped = model #TODO model不是说永远指向原始模型吗？？
+            self.model = self.model_wrapped = model #TODO self.model不是说永远指向原始模型吗？？
 
         # for the rest of this function `model` is the outside model, whether it was wrapped or not
         if model is not self.model:
@@ -1708,7 +1708,7 @@ class Trainer:
 
         # Train!
         logger.info("***** Running training *****")
-        logger.info(f"  Num examples = {num_examples:,}") #:,是格式说明符，加上千分位逗号
+        logger.info(f"  Num examples = {num_examples:,}") # :,是格式说明符，加上千分位逗号
         logger.info(f"  Num Epochs = {num_train_epochs:,}")
         logger.info(f"  Instantaneous batch size per device = {self.args.per_device_train_batch_size:,}")
         if self.args.per_device_train_batch_size != self._train_batch_size:
@@ -1765,7 +1765,7 @@ class Trainer:
         self.state.is_world_process_zero = self.is_world_process_zero()
 
         # tr_loss is a tensor to avoid synchronization of TPUs through .item()
-        tr_loss = torch.tensor(0.0).to(args.device)
+        tr_loss = torch.tensor(0.0).to(args.device) #[ ]The device used by this process.
         # _total_loss_scalar is updated everytime .item() has to be called on tr_loss and stores the sum of all losses
         self._total_loss_scalar = 0.0
         self._globalstep_last_logged = self.state.global_step #[ ] global_step是全局update的step数，这里用来记录上次log时的global_step
@@ -1774,7 +1774,7 @@ class Trainer:
         self.control = self.callback_handler.on_train_begin(args, self.state, self.control)
 
         # Skip the first epochs_trained epochs to get the random state of the dataloader at the right point.
-        if not args.ignore_data_skip: #TODO
+        if not args.ignore_data_skip:
             for epoch in range(epochs_trained):
                 sampler = get_dataloader_sampler(train_dataloader)
                 sampler_kinds = [RandomSampler]

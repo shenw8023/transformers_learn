@@ -1,3 +1,14 @@
+"""
+## 重点：
+- 经过accelerate处理后的train_dataloader，其len(train_dataloader)已经被各进程平分了。所以程序上各参数可以视为单卡训练去写。
+- TrainerState, TrainerControl 配合 CallbackHandler 对训练过程中的log, save, eval等操作进行灵活控制
+- TrainerState.global_step 是global_update_step
+
+"""
+
+
+
+
 
 class Trainer:
 
@@ -77,6 +88,31 @@ class Trainer:
         )
         self.control = TrainerControl()
         self.control = self.callback_handler.on_init_end(self.args, self.state, self.control)
+
+
+
+    def train(self, resume_from_checkpoint=None, ignore_keys_for_eval=None):
+        if resume_from_checkpoint is False:
+            resume_from_checkpoint = None
+
+        args = self.args
+        self.is_in_train = True
+
+        # Model re-init  #[ ]如果设定了model_init，训练前总会重新创建模型
+        model_reloaded = False
+        if self.model_init is not None:
+            ...
+
+        # Load potential model checkpoint
+        if isinstance(resume_from_checkpoint, bool) and resume_from_checkpoint:
+            ...
+
+        return self._inner_training_loop(
+                args=args,
+                resume_from_checkpoint=resume_from_checkpoint,
+                ignore_keys_for_eval=ignore_keys_for_eval,
+            )
+        
 
 
     def compute_loss(self, model, inputs, return_outputs=False):
@@ -221,10 +257,27 @@ class Trainer:
                 gradient_checkpointing_kwargs = args.gradient_checkpointing_kwargs
             self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
 
+        #[ ]根据情况包装模型
+        model = self._wrap_model(self.model_wrapped)
+        use_accelerator_prepare = True if model is self.model else False
+        # prepare using `accelerator` prepare
+        if use_accelerator_prepare:
+            model, self.optimizer, self.lr_scheduler = self.accelerator.prepare(
+                    self.model, self.optimizer, self.lr_scheduler
+                )
+                
 
         # for the rest of this function `model` is the outside model, whether it was wrapped or not
         if model is not self.model:
             self.model_wrapped = model
+
+
+        #[ ] ckpt loading
+        if resume_from_checkpoint is not None:
+            if self.is_deepspeed_enabled:
+                deepspeed_load_checkpoint(self.model_wrapped, resume_from_checkpoint)
+            elif is_sagemaker_mp_enabled() or self.is_fsdp_enabled:
+                self._load_from_checkpoint(resume_from_checkpoint, self.model_wrapped)
 
 
 
@@ -247,11 +300,12 @@ class Trainer:
         steps_trained_progress_bar = None
 
 
-        # 如果是断点续训，加载上次结束时相关状态
+        # 如果是断点续训，加载上次结束时相关状态（关于state，先正常初始化，然后到这里再根据是否断点续训加载保存的state）
+            #[ ] 从checkpoint中加载state需要找到两个量：1.epochs_trained, 2.steps_trained_in_current_epoch
         if resume_from_checkpoint is not None and os.path.isfile(os.path.join(resume_from_checkpoint, TRAINER_STATE_NAME)):
             self.state = TrainerState.load_from_json(os.path.join(resume_from_checkpoint, TRAINER_STATE_NAME))
             epochs_trained = self.state.global_step // num_update_steps_per_epoch #[ ] global_step实际上是global_update_step
-            if not args.ignore_data_skip: 
+            if not args.ignore_data_skip: #默认情况下会进行data_skip
                 steps_trained_in_current_epoch = self.state.global_step % (num_update_steps_per_epoch)
                 steps_trained_in_current_epoch *= args.gradient_accumulation_steps #[ ] 换算成要跳过多少个batch
             else:
@@ -272,14 +326,14 @@ class Trainer:
         self.callback_handler.optimizer = self.optimizer
         self.callback_handler.lr_scheduler = self.lr_scheduler
         self.callback_handler.train_dataloader = train_dataloader
-        #[ ]防止继续训练中的相关参数被修改了，这里重新加载这几个参数，注意，只是部分
+        #[ ]防止继续训练中的相关参数被修改了，这里重新加载这几个参数，注意只是部分，一般比较重要的变动的也就是max_steps和num_train_epochs了，另外还有就是主进程的变动。
         self.state.max_steps = max_steps
         self.state.num_train_epochs = num_train_epochs
         self.state.is_local_process_zero = self.is_local_process_zero()
         self.state.is_world_process_zero = self.is_world_process_zero()
 
         #[ ] 变量记录loss
-        tr_loss = torch.tensor(0.0).to(args.device)#TODO为什么不用self记录
+        tr_loss = torch.tensor(0.0).to(args.device)#The device used by this process.#TODO为什么不用self记录
         self._total_loss_scalar = 0.0 
         self._globalstep_last_logged = self.state.global_step  #[ ] global_step是全局update的step数，这里用来记录上次log时的global_step
         model.zero_grad()
@@ -287,13 +341,15 @@ class Trainer:
 
         self.control = self.callback_handler.on_train_begin(args, self.state, self.control) #[ ] callback.on_train_begin
         
-        #[ ]执行epochs_trained轮，确保dataloader能执行到特定的random_state
+
+        #[ ]执行epochs_trained轮的数据采样，确保dataloader能执行到特定的random_state
+
 
         total_batched_samples = 0 #[ ]用来记录走了多少个batch，给gradient_accumulation_steps做判断用的
         for epoch in range(epochs_trained, num_train_epochs):
             epoch_iterator = train_dataloader
 
-            steps_in_epoch = (  #[ ]train_dataloader总共包含的batch数量，也就是step数量
+            steps_in_epoch = (  #[ ]train_dataloader总共包含的batch数量，后面用于判断是否不足一个accumulation_steps
                 len(epoch_iterator)
                 if len_dataloader is not None
                 else args.max_steps * args.gradient_accumulation_steps
